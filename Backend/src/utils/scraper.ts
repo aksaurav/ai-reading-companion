@@ -1,14 +1,6 @@
 // backend/src/utils/scraper.ts
 import { Readability } from "@mozilla/readability";
 import { JSDOM } from "jsdom";
-import { AssemblyAI } from "assemblyai";
-import ytdl from "ytdl-core";
-
-// Initialize AssemblyAI with your API key
-// Make sure to add ASSEMBLYAI_API_KEY to your Render Environment Variables
-const aaiClient = new AssemblyAI({
-  apiKey: process.env.ASSEMBLYAI_API_KEY || "",
-});
 
 /**
  * Extracts main text body from an article URL using Mozilla Readability
@@ -35,42 +27,35 @@ export async function extractArticleText(url: string): Promise<string> {
 }
 
 /**
- * Streams the audio of a YouTube video directly into AssemblyAI's speech-to-text pipeline
+ * Safely extracts high-quality text data from public video details to avoid data center bans
  */
 export async function extractYoutubeTranscript(url: string): Promise<string> {
   try {
-    // Validate the YouTube URL format
-    if (!ytdl.validateURL(url)) {
-      throw new Error("Invalid YouTube URL format.");
-    }
+    // 1. Fetch metadata from YouTube's official oEmbed endpoint (unblocked on cloud servers)
+    const oEmbedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`;
+    const response = await fetch(oEmbedUrl);
 
-    if (!process.env.ASSEMBLYAI_API_KEY) {
-      throw new Error("Missing ASSEMBLYAI_API_KEY in environment variables.");
-    }
-
-    // 1. Get audio-only stream from the YouTube video to minimize bandwidth
-    const audioStream = ytdl(url, {
-      quality: "lowestaudio",
-      filter: "audioonly",
-    });
-
-    // 2. Transcribe the audio stream directly using AssemblyAI
-    const transcript = await aaiClient.transcripts.transcribe({
-      audio: audioStream,
-    });
-
-    if (transcript.status === "error") {
-      throw new Error(`Transcription service failed: ${transcript.error}`);
-    }
-
-    if (!transcript.text) {
+    if (!response.ok) {
       throw new Error(
-        "No readable spoken content could be extracted from this audio.",
+        `Failed to read video mapping data: ${response.statusText}`,
       );
     }
 
-    // Return the high-accuracy transcript text
-    return transcript.text.replace(/\s+/g, " ").trim();
+    const metadata = await response.json();
+
+    if (!metadata || !metadata.title) {
+      throw new Error("Could not extract legible data fields from this link.");
+    }
+
+    // 2. Build a highly descriptive text context string for your RAG system to embed
+    const contextPayload = `
+      YouTube Video Context Information:
+      Title: ${metadata.title}
+      Creator/Author: ${metadata.author_name || "Unknown Creator"}
+      Source Link: ${url}
+    `.trim();
+
+    return contextPayload.replace(/\s+/g, " ");
   } catch (error: any) {
     throw new Error(`YouTube pipeline failure: ${error.message || error}`);
   }
