@@ -1,7 +1,14 @@
 // backend/src/utils/scraper.ts
 import { Readability } from "@mozilla/readability";
 import { JSDOM } from "jsdom";
-import { getSubtitles } from "youtube-caption-extractor"; // Swapped to the stable endpoint
+import { AssemblyAI } from "assemblyai";
+import ytdl from "ytdl-core";
+
+// Initialize AssemblyAI with your API key
+// Make sure to add ASSEMBLYAI_API_KEY to your Render Environment Variables
+const aaiClient = new AssemblyAI({
+  apiKey: process.env.ASSEMBLYAI_API_KEY || "",
+});
 
 /**
  * Extracts main text body from an article URL using Mozilla Readability
@@ -28,37 +35,43 @@ export async function extractArticleText(url: string): Promise<string> {
 }
 
 /**
- * Fetches transcript lines from a YouTube URL and joins them into a single string
+ * Streams the audio of a YouTube video directly into AssemblyAI's speech-to-text pipeline
  */
 export async function extractYoutubeTranscript(url: string): Promise<string> {
   try {
-    // Basic regex extraction to get video ID from standard or shortened URLs
-    const videoIdMatch = url.match(
-      /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/,
-    );
-    if (!videoIdMatch) throw new Error("Invalid YouTube URL format.");
-
-    const videoId = videoIdMatch[1];
-
-    // Fetch subtitles dynamically (defaults to English 'en')
-    const transcriptItems = await getSubtitles({
-      videoID: videoId,
-      lang: "en",
-    });
-
-    if (!transcriptItems || transcriptItems.length === 0) {
-      throw new Error("No transcript lines were returned for this video.");
+    // Validate the YouTube URL format
+    if (!ytdl.validateURL(url)) {
+      throw new Error("Invalid YouTube URL format.");
     }
 
-    // Clean up typical transcript HTML artifacts like &nbsp; and format spaces smoothly
-    return transcriptItems
-      .map((item) => item.text)
-      .join(" ")
-      .replace(/&nbsp;/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
+    if (!process.env.ASSEMBLYAI_API_KEY) {
+      throw new Error("Missing ASSEMBLYAI_API_KEY in environment variables.");
+    }
+
+    // 1. Get audio-only stream from the YouTube video to minimize bandwidth
+    const audioStream = ytdl(url, {
+      quality: "lowestaudio",
+      filter: "audioonly",
+    });
+
+    // 2. Transcribe the audio stream directly using AssemblyAI
+    const transcript = await aaiClient.transcripts.transcribe({
+      audio: audioStream,
+    });
+
+    if (transcript.status === "error") {
+      throw new Error(`Transcription service failed: ${transcript.error}`);
+    }
+
+    if (!transcript.text) {
+      throw new Error(
+        "No readable spoken content could be extracted from this audio.",
+      );
+    }
+
+    // Return the high-accuracy transcript text
+    return transcript.text.replace(/\s+/g, " ").trim();
   } catch (error: any) {
-    // Stop assuming every error is a "disabled captions" error so you get accurate logs
     throw new Error(`YouTube pipeline failure: ${error.message || error}`);
   }
 }
